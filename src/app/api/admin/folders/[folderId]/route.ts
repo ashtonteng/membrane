@@ -3,7 +3,7 @@ import * as vault from '@/lib/vault'
 import { authenticateAdmin, unauthorizedResponse } from '@/lib/auth'
 
 type RouteContext = {
-  params: Promise<{ id: string }>
+  params: Promise<{ folderId: string }>
 }
 
 export async function GET(
@@ -24,8 +24,8 @@ export async function GET(
   }
 
   try {
-    const { id } = await context.params
-    const folder = vault.getFolder(id)
+    const { folderId } = await context.params
+    const folder = vault.getFolder(folderId)
 
     if (!folder) {
       return Response.json(
@@ -68,7 +68,7 @@ export async function PATCH(
   }
 
   try {
-    const { id } = await context.params
+    const { folderId } = await context.params
     const body = await request.json()
     const { name } = body
 
@@ -86,7 +86,7 @@ export async function PATCH(
       )
     }
 
-    const folder = vault.renameFolder(id, name.trim())
+    const folder = vault.renameFolder(folderId, name.trim())
 
     return Response.json({
       id: folder.id,
@@ -126,8 +126,8 @@ export async function DELETE(
   }
 
   try {
-    const { id } = await context.params
-    vault.deleteFolder(id)
+    const { folderId } = await context.params
+    vault.deleteFolder(folderId)
 
     return Response.json({ success: true })
   } catch (error) {

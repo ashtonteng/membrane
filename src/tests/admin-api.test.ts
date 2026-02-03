@@ -8,7 +8,7 @@ import * as vault from '../lib/vault'
 import { POST as setupPost } from '../app/api/admin/setup/route'
 import { GET as vaultStatusGet } from '../app/api/admin/vault/status/route'
 import { POST as foldersPost, GET as foldersGet } from '../app/api/admin/folders/route'
-import { GET as folderGet, PATCH as folderPatch, DELETE as folderDelete } from '../app/api/admin/folders/[id]/route'
+import { GET as folderGet, PATCH as folderPatch, DELETE as folderDelete } from '../app/api/admin/folders/[folderId]/route'
 import { POST as filesPost, GET as filesGet } from '../app/api/admin/folders/[folderId]/files/route'
 import { GET as fileGet, DELETE as fileDelete } from '../app/api/admin/files/[id]/route'
 import { GET as fileMetadataGet } from '../app/api/admin/files/[id]/metadata/route'
@@ -227,11 +227,11 @@ describe('Admin API', () => {
       })
     })
 
-    describe('GET /api/admin/folders/[id]', () => {
+    describe('GET /api/admin/folders/[folderId]', () => {
       it('should return folder by id', async () => {
         const folder = vault.createFolder('Test Folder')
         const request = createRequest(`/api/admin/folders/${folder.id}`)
-        const context = createContext({ id: folder.id })
+        const context = createContext({ folderId: folder.id })
 
         const response = await folderGet(request as any, context)
         const data = await response.json()
@@ -244,7 +244,7 @@ describe('Admin API', () => {
 
       it('should return 404 for non-existent folder', async () => {
         const request = createRequest('/api/admin/folders/non-existent')
-        const context = createContext({ id: 'non-existent' })
+        const context = createContext({ folderId: 'non-existent' })
 
         const response = await folderGet(request as any, context)
         const data = await response.json()
@@ -254,14 +254,14 @@ describe('Admin API', () => {
       })
     })
 
-    describe('PATCH /api/admin/folders/[id]', () => {
+    describe('PATCH /api/admin/folders/[folderId]', () => {
       it('should rename folder', async () => {
         const folder = vault.createFolder('Old Name')
         const request = createRequest(`/api/admin/folders/${folder.id}`, {
           method: 'PATCH',
           body: { name: 'New Name' },
         })
-        const context = createContext({ id: folder.id })
+        const context = createContext({ folderId: folder.id })
 
         const response = await folderPatch(request as any, context)
         const data = await response.json()
@@ -276,7 +276,7 @@ describe('Admin API', () => {
           method: 'PATCH',
           body: { name: 'New Name' },
         })
-        const context = createContext({ id: 'non-existent' })
+        const context = createContext({ folderId: 'non-existent' })
 
         const response = await folderPatch(request as any, context)
         const data = await response.json()
@@ -286,13 +286,13 @@ describe('Admin API', () => {
       })
     })
 
-    describe('DELETE /api/admin/folders/[id]', () => {
+    describe('DELETE /api/admin/folders/[folderId]', () => {
       it('should delete folder', async () => {
         const folder = vault.createFolder('To Delete')
         const request = createRequest(`/api/admin/folders/${folder.id}`, {
           method: 'DELETE',
         })
-        const context = createContext({ id: folder.id })
+        const context = createContext({ folderId: folder.id })
 
         const response = await folderDelete(request as any, context)
         const data = await response.json()
@@ -306,7 +306,7 @@ describe('Admin API', () => {
         const request = createRequest('/api/admin/folders/non-existent', {
           method: 'DELETE',
         })
-        const context = createContext({ id: 'non-existent' })
+        const context = createContext({ folderId: 'non-existent' })
 
         const response = await folderDelete(request as any, context)
         const data = await response.json()
