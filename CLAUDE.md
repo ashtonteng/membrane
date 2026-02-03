@@ -22,24 +22,46 @@ Membrane is a local-first personal context vault that lets users store personal 
 - **Keychain**: keytar (cross-platform keychain access)
 - **Testing**: Vitest
 
+## Implementation Status
+
+- [x] Phase 1: Vault + Encryption Layer (54 tests)
+- [x] Phase 2: Admin API - Setup, Folders, Files (29 tests)
+- [x] Phase 3: Admin API - Agents, Grants, Sessions (26 tests)
+- [x] Phase 4: Agent API - Context Endpoints (24 tests)
+- [ ] Phase 5: Web GUI
+
+**Total: 133 tests passing**
+
 ## Project Structure
 
 ```
 src/
-├── app/                 # Next.js App Router pages
-│   ├── api/
-│   │   ├── admin/      # Admin API (session-protected)
-│   │   ├── context/    # Agent API (API key auth)
-│   │   └── health/     # Health check
-│   ├── vault/          # Vault manager page
-│   ├── permissions/    # Permissions dashboard
-│   └── agents/         # Agent registration
+├── app/                 # Next.js App Router
+│   └── api/
+│       ├── admin/       # Admin API (session-protected)
+│       │   ├── setup/   # POST - Initialize vault
+│       │   ├── vault/   # GET status
+│       │   ├── folders/ # CRUD operations
+│       │   ├── files/   # File operations
+│       │   ├── agents/  # Agent management
+│       │   ├── grants/  # Grant management
+│       │   └── sessions/# Session auth
+│       ├── context/     # Agent API (API key auth)
+│       │   ├── folders/ # List granted folders/files
+│       │   └── files/   # Get decrypted content
+│       └── health/      # Health check
 ├── lib/
-│   ├── vault.ts        # Vault encryption operations
-│   ├── db.ts           # Database operations
-│   ├── auth.ts         # Authentication utilities
-│   └── types.ts        # TypeScript types
-└── tests/              # Test files
+│   ├── vault.ts         # Vault encryption operations
+│   ├── db.ts            # Database operations (agents, grants, sessions)
+│   ├── auth.ts          # Session authentication
+│   ├── apiAuth.ts       # API key authentication for agents
+│   └── types.ts         # TypeScript types
+└── tests/
+    ├── vault.test.ts    # Vault layer tests
+    ├── db.test.ts       # Database tests
+    ├── admin-api.test.ts # Admin API tests
+    ├── admin-agents.test.ts # Agents/grants tests
+    └── context-api.test.ts # Agent API tests
 ```
 
 ## Environment Variables
