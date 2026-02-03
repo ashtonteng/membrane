@@ -29,6 +29,7 @@ Membrane is a local-first personal context vault that lets users store personal 
 - [x] Phase 3: Admin API - Agents, Grants, Sessions (26 tests)
 - [x] Phase 4: Agent API - Context Endpoints (24 tests)
 - [x] Phase 5: Web GUI (shadcn/ui components)
+- [x] Phase 6: Claude Code Skill
 
 **Total: 133 tests passing**
 
@@ -40,9 +41,36 @@ Membrane is a local-first personal context vault that lets users store personal 
 - `/agents` - Agent registration with one-time API key display
 - `/permissions` - Toggle folder access per agent
 
+## Claude Code Skill
+
+The `skill/` directory contains a Claude Code skill for accessing vault data:
+
+- `skill/skill.md` - Skill instructions defining tools and behaviors
+- `skill/README.md` - User documentation for setup and usage
+
+### Skill Commands
+
+| Command | Description |
+|---------|-------------|
+| `/membrane setup <key>` | Configure API key |
+| `/membrane list folders` | List accessible folders |
+| `/membrane list files in <folder>` | List files in a folder |
+| `/membrane read <filename>` | Read file content |
+| `/membrane search <pattern>` | Search files by name |
+| `/membrane health` | Check server status |
+
+### Skill Configuration
+
+- `MEMBRANE_API_KEY` - Environment variable for API key
+- `MEMBRANE_URL` - Server URL (default: http://localhost:3000)
+- `~/.membrane-claude-config.json` - Config file fallback
+
 ## Project Structure
 
 ```
+skill/
+├── skill.md             # Claude Code skill instructions
+└── README.md            # User documentation
 src/
 ├── app/                 # Next.js App Router
 │   └── api/
