@@ -1,22 +1,36 @@
 import { cookies } from 'next/headers'
+import { NextResponse } from 'next/server'
 import { validateSession } from './db'
 
-// Check if running in test mode
+const SESSION_COOKIE_NAME = 'membrane_session'
+
+/**
+ * Check if test mode is enabled (bypasses session auth)
+ */
 export function isTestMode(): boolean {
   return process.env.MEMBRANE_TEST_MODE === 'true'
 }
 
-// Authenticate admin request - returns true if authenticated
-export async function authenticateAdmin(): Promise<boolean> {
-  // In test mode, bypass authentication
+/**
+ * Get the session ID from cookies
+ */
+export async function getSessionId(): Promise<string | null> {
+  const cookieStore = await cookies()
+  const sessionCookie = cookieStore.get(SESSION_COOKIE_NAME)
+  return sessionCookie?.value || null
+}
+
+/**
+ * Validate the current session from cookies
+ * Returns true if session is valid or if in test mode
+ */
+export async function isAuthenticated(): Promise<boolean> {
+  // In test mode, bypass session auth
   if (isTestMode()) {
     return true
   }
 
-  // Check for session cookie
-  const cookieStore = await cookies()
-  const sessionId = cookieStore.get('membrane_session')?.value
-
+  const sessionId = await getSessionId()
   if (!sessionId) {
     return false
   }
@@ -24,10 +38,55 @@ export async function authenticateAdmin(): Promise<boolean> {
   return validateSession(sessionId)
 }
 
-// Helper to create error response
+// Alias for backward compatibility
+export const authenticateAdmin = isAuthenticated
+
+/**
+ * Middleware function to require authentication
+ * Returns an error response if not authenticated, null otherwise
+ */
+export async function requireAuth(): Promise<NextResponse | null> {
+  const authenticated = await isAuthenticated()
+
+  if (!authenticated) {
+    return NextResponse.json(
+      { error: 'unauthorized', message: 'Authentication required' },
+      { status: 401 }
+    )
+  }
+
+  return null
+}
+
+// Helper to create error response (for backward compatibility)
 export function unauthorizedResponse() {
   return Response.json(
     { error: 'Unauthorized', message: 'Authentication required' },
     { status: 401 }
   )
 }
+
+/**
+ * Set session cookie
+ */
+export async function setSessionCookie(sessionId: string): Promise<void> {
+  const cookieStore = await cookies()
+  cookieStore.set(SESSION_COOKIE_NAME, sessionId, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'strict',
+    path: '/',
+    // Session cookie - no maxAge means it expires when browser closes
+    // For longer sessions, could add: maxAge: 60 * 60 * 24 * 7 (7 days)
+  })
+}
+
+/**
+ * Clear session cookie
+ */
+export async function clearSessionCookie(): Promise<void> {
+  const cookieStore = await cookies()
+  cookieStore.delete(SESSION_COOKIE_NAME)
+}
+
+export { SESSION_COOKIE_NAME }
