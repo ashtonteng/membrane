@@ -28,9 +28,17 @@ Membrane is a local-first personal context vault that lets users store personal 
 - [x] Phase 2: Admin API - Setup, Folders, Files (29 tests)
 - [x] Phase 3: Admin API - Agents, Grants, Sessions (26 tests)
 - [x] Phase 4: Agent API - Context Endpoints (24 tests)
-- [ ] Phase 5: Web GUI
+- [x] Phase 5: Web GUI (shadcn/ui components)
 
 **Total: 133 tests passing**
+
+## GUI Pages
+
+- `/setup` - First-run vault initialization wizard
+- `/login` - Recovery password authentication
+- `/vault` - Folder and file management with drag-and-drop upload
+- `/agents` - Agent registration with one-time API key display
+- `/permissions` - Toggle folder access per agent
 
 ## Project Structure
 
