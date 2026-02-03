@@ -36,7 +36,7 @@ export async function GET(
     const { buffer, metadata: fileMetadata } = decryptAndRead(fileId)
 
     // Return file content with headers
-    const response = new NextResponse(buffer, {
+    const response = new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
         'Content-Type': fileMetadata.mime_type || 'application/octet-stream',

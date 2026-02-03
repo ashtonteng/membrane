@@ -29,7 +29,7 @@ export async function GET(
     const { buffer, metadata } = vault.decryptAndRead(id)
 
     // Return file content with appropriate headers
-    return new Response(buffer, {
+    return new Response(new Uint8Array(buffer), {
       headers: {
         'Content-Type': metadata.mime_type || 'application/octet-stream',
         'Content-Disposition': `attachment; filename="${encodeURIComponent(metadata.original_name)}"`,
