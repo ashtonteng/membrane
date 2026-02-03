@@ -1,11 +1,14 @@
 import { NextRequest } from 'next/server'
 import * as vault from '@/lib/vault'
-import { authenticateAdmin, unauthorizedResponse } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
-  // Authenticate (bypassed in test mode)
-  if (!(await authenticateAdmin())) {
-    return unauthorizedResponse()
+  // Setup endpoint does not require authentication - it's the first-time initialization
+  // However, we check if vault is already initialized to prevent accidental re-initialization
+  if (vault.isInitialized()) {
+    return Response.json(
+      { error: 'Conflict', message: 'Vault is already initialized' },
+      { status: 409 }
+    )
   }
 
   try {
