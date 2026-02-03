@@ -65,6 +65,7 @@ This system runs on a machine where AI agents (Clawdbot/Openclaw agents) also ru
 - **Master key:** 256-bit key, generated on first run, stored in the system keychain
   - macOS: Use `security` CLI or `keytar` npm package to store/retrieve from Keychain
   - Linux: Use `libsecret` via `keytar`
+  - **Test mode:** When `MEMBRANE_SKIP_KEYCHAIN=true`, the master key is held in memory only and not persisted to the keychain. This allows tests to run without touching the real keychain and enables CI environments without keychain access.
 - **Master key backup:** On first run, the user provides a recovery password. The master key is encrypted using a key derived via PBKDF2 (100,000 iterations, SHA-256) from this password and saved to `~/.membrane/keys/master.key.enc`. If the keychain entry is lost, the user can restore from this backup by providing the recovery password.
 - **Per-file encryption:** Each file gets a unique random IV (initialization vector). The IV is prepended to the ciphertext in the `.enc` file. Format: `[12-byte IV][ciphertext][16-byte auth tag]`
 - **Key derivation:** Use the master key directly for file encryption. (In a production version, you'd derive per-folder keys, but for V0 the master key is sufficient.)
@@ -74,13 +75,11 @@ This system runs on a machine where AI agents (Clawdbot/Openclaw agents) also ru
 Implement these as a module (`vault.ts` or `vault.js`):
 
 ```
-vault.init(recoveryPassword)       → Generate master key, store in keychain, create backup file, create directory structure
-vault.unlock()                     → Load master key from keychain into memory, open encrypted database
-vault.lock()                       → Clear master key from memory, close database (all operations will fail until unlock)
-vault.isUnlocked()                 → Returns whether the vault is currently unlocked
+vault.init(recoveryPassword)       → Generate master key, store in keychain, create backup file, create directory structure, open database
+vault.load()                       → Load master key from keychain into memory, open encrypted database (called on server start)
+vault.isInitialized()              → Returns whether the vault has been set up
 vault.restoreFromBackup(password)  → Decrypt master.key.enc with password, restore to keychain
 vault.encryptAndStore(folderId, fileBuffer, metadata) → Encrypt file, write .enc, store metadata in SQLite
-vault.updateFile(fileId, fileBuffer) → Re-encrypt with new content, update metadata (size, updated_at)
 vault.decryptAndRead(fileId)       → Load .enc file, decrypt with master key, return plaintext buffer
 vault.deleteFile(fileId)           → Remove .enc file and SQLite metadata
 vault.createFolder(name)           → Create folder directory and SQLite record
@@ -100,7 +99,6 @@ The database stores all metadata, permissions, and access logs.
 CREATE TABLE folders (
     id TEXT PRIMARY KEY,             -- UUID
     name TEXT NOT NULL,              -- Human-readable name (e.g., "Work", "Chat History")
-    description TEXT,                -- Optional description
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -120,10 +118,8 @@ CREATE TABLE files (
 CREATE TABLE agents (
     id TEXT PRIMARY KEY,             -- UUID
     name TEXT NOT NULL,              -- Display name (e.g., "Clawdbot Research Agent")
-    description TEXT,                -- What this agent does
     api_key_hash TEXT NOT NULL,      -- SHA-256 hash of the API key (hex-encoded)
     api_key_prefix TEXT NOT NULL,    -- First 12 chars of key for display (e.g., "mb_sk_a1b2c3")
-    status TEXT DEFAULT 'active',    -- active, revoked
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -136,32 +132,16 @@ CREATE TABLE grants (
     UNIQUE(agent_id, folder_id)
 );
 
--- Access log: every API request is logged (successes and denials)
-CREATE TABLE access_log (
-    id TEXT PRIMARY KEY,             -- UUID
-    agent_id TEXT NOT NULL REFERENCES agents(id),
-    folder_id TEXT,                  -- NULL if listing folders
-    file_id TEXT,                    -- NULL if listing folder contents
-    endpoint TEXT NOT NULL,          -- e.g., "/api/context/folders", "/api/context/files/{id}"
-    result TEXT NOT NULL,            -- "success", "denied", "error"
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
 -- GUI user sessions (for httpOnly cookie auth)
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,             -- Session token (random 32-byte hex)
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    expires_at DATETIME NOT NULL,    -- Session expiration (e.g., created_at + 24 hours)
-    last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP  -- For idle timeout tracking
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes for query performance
 CREATE INDEX idx_files_folder_id ON files(folder_id);
 CREATE INDEX idx_grants_agent_id ON grants(agent_id);
 CREATE INDEX idx_grants_folder_id ON grants(folder_id);
-CREATE INDEX idx_access_log_agent_id ON access_log(agent_id);
-CREATE INDEX idx_access_log_timestamp ON access_log(timestamp DESC);
-CREATE INDEX idx_sessions_expires_at ON sessions(expires_at);
 ```
 
 **Note on the `grants` table:** There is no `status` or `pending` state. Grants are binary — they either exist (access granted) or they don't. The user creates grants proactively from the GUI. The old `consent` table with `pending/approved/denied/revoked` states has been replaced by this simpler model.
@@ -178,25 +158,16 @@ The GUI requires session-based authentication to prevent malicious local process
 
 - **Session token:** Stored in an `httpOnly`, `Secure=false` (localhost), `SameSite=Strict` cookie
 - **Login flow:** User enters their recovery password (the same one used for the master key backup). The server verifies it can decrypt `master.key.enc` with this password. On success, a session token is generated and stored in the cookie.
-- **Session storage:** Sessions are stored in the encrypted SQLite database with expiration (e.g., 24 hours)
+- **Session storage:** Sessions are stored in the encrypted SQLite database (no expiration in V0)
 - **Protected routes:** All GUI pages and internal API routes (not `/api/context/*`) require a valid session
 - **Why this works:** An agent process cannot read `httpOnly` cookies from the browser. It would need the recovery password to authenticate.
-
-### Vault Lock/Unlock
-
-The GUI header includes a "Lock Vault" button:
-- **Lock:** Clears the master key from server memory. All decrypt operations fail. The GUI shows a locked state.
-- **Unlock:** User enters recovery password. Server loads master key back into memory. Normal operation resumes.
-- When locked, agent API calls return `503 Service Unavailable` with message "Vault is locked."
-
-The vault auto-locks after a configurable idle timeout (default: 30 minutes of no GUI activity).
 
 ### Pages
 
 #### Page 1: Vault Manager (`/vault`)
 
 - Shows all folders as cards in a grid layout
-- Each folder card shows: name, description, file count, created date
+- Each folder card shows: name, file count, created date
 - Click a folder to see its contents (file list with names, sizes, dates)
 - Actions: Create folder, rename folder, delete folder
 - Upload files into a folder via drag-and-drop or file picker
@@ -217,19 +188,12 @@ This is the core of the user-initiated sharing model. The user comes here to pro
 
 **Key UX principle:** Agents never request access. The user decides what to share and with whom. This is like sharing a Google Drive folder — you pick the folder, you pick the person, you grant access.
 
-#### Page 3: Activity Log (`/activity`)
+#### Page 3: Agent Registration (`/agents`)
 
-- Chronological feed of all API access events
-- Each entry shows: timestamp, agent name, action (which endpoint), which folder/file was accessed
-- Simple filtering by agent or folder
-- This builds user trust through transparency
-
-#### Page 4: Agent Registration (`/agents`)
-
-- Form to register a new AI agent: name, description
+- Form to register a new AI agent: name
 - On registration, generate and display the API key ONCE (with copy button and warning that it won't be shown again)
 - API key format: `mb_sk_{random_string}` (e.g., `mb_sk_a1b2c3d4e5f6...`)
-- List existing agents with ability to regenerate keys or delete agents
+- List existing agents with ability to delete agents
 - After registering an agent, prompt the user: "Share folders with this agent?" with a link to the Permissions Dashboard
 
 ### Setup Flow (First Run)
@@ -238,12 +202,10 @@ This is the core of the user-initiated sharing model. The user comes here to pro
   1. "Welcome to Membrane"
   2. **Ask user to create a recovery password** (with confirmation field). Explain this password is used to:
      - Log into the GUI
-     - Unlock the vault after locking
      - Recover if the system keychain is lost
   3. Generate master key, store in keychain, create encrypted backup (`master.key.enc`)
   4. Initialize encrypted SQLite database
-  5. Create default folder suggestions: "Documents", "Chat History", "Work", "Personal" (user can customize)
-  6. Create session and redirect to vault manager
+  5. Create session and redirect to vault manager
 
 ### Design Guidelines
 
@@ -261,8 +223,7 @@ The agent API is served by the same Next.js server on port 3000, under the `/api
 ### Authentication
 
 - API key-based auth via `Authorization: Bearer mb_sk_...` header
-- On every request: hash the provided key with SHA-256, look up the agent by hash, reject if not found or revoked
-- All requests are logged to the access_log table
+- On every request: hash the provided key with SHA-256, look up the agent by hash, reject if not found
 - **No session cookie required** — agents authenticate exclusively via API key
 
 ### Sharing Model: User-Initiated
@@ -282,65 +243,205 @@ GET  /api/health                          → { status: "ok", version: "0.1.0" }
 
 # Context access (agent-facing, requires valid API key + folder grant)
 GET  /api/context/folders                 → List folders the agent has been granted access to
-     Response: { folders: [{ id, name, description, file_count }] }
+     Response: { folders: [{ id, name, file_count }] }
 
 GET  /api/context/folders/:folderId       → List files in a specific folder
      Response: { folder: { id, name }, files: [{ id, name, mime_type, size_bytes, created_at }] }
 
 GET  /api/context/files/:fileId           → Get decrypted file content
      Response: File content with appropriate Content-Type header
+     Headers include: X-File-Name, X-File-Size, Content-Type
      (For text files, return the text. For binary files, return the binary with correct MIME type.)
-
-GET  /api/context/files/:fileId/metadata  → Get file metadata without content
-     Response: { id, name, mime_type, size_bytes, folder_id, created_at }
 ```
 
-**That's it.** Four context endpoints plus a health check. No consent endpoints, no discovery endpoints, no folder listing for agents that haven't been granted access. The API surface is deliberately minimal.
+**That's it.** Three context endpoints plus a health check. No consent endpoints, no discovery endpoints, no folder listing for agents that haven't been granted access. The API surface is deliberately minimal.
 
 ### Enforcement Rules
 
 - Every context endpoint (`/api/context/*`) MUST check that the requesting agent has a grant record for the relevant folder
 - If an agent tries to access a folder it hasn't been granted, return `403 Forbidden` with body: `{ error: "no_access", message: "This agent has not been granted access to this folder. The user must grant access via the Membrane dashboard." }`
 - If an agent tries to access a file in a folder it hasn't been granted, return `403 Forbidden` (look up the file's folder_id, check for a grant)
-- If the API key is invalid or the agent has been revoked, return `401 Unauthorized`
-- If the vault is locked, return `503 Service Unavailable` with body: `{ error: "vault_locked", message: "The vault is currently locked. The user must unlock it via the Membrane dashboard." }`
-- All requests (successful and denied) are logged to `access_log` with appropriate `result` value
+- If the API key is invalid or the agent doesn't exist, return `401 Unauthorized`
 
 ---
 
-## Implementation Plan
+## Component 5: Admin API (`/api/admin/*`)
 
-Build in this order:
+Internal API for vault management. Used by the GUI frontend and for programmatic/automated testing. This API provides full control over folders, files, agents, grants, and vault state.
+
+### Authentication
+
+- **Normal mode:** Protected by session auth (same `httpOnly` cookie as GUI pages)
+- **Test mode:** When `MEMBRANE_TEST_MODE=true` environment variable is set, session auth is bypassed on admin routes. This enables fully automated test runs without browser interaction.
+
+**Security note:** Test mode should NEVER be enabled in any environment where untrusted processes run. It's intended only for isolated test environments (CI, local test runs with a throwaway vault).
+
+### Endpoints
+
+```
+# Setup & Vault Status
+POST   /api/admin/setup                → Initialize vault { recoveryPassword }
+                                         Creates master key, keychain entry, backup file, database
+                                         Response: { success: true }
+
+GET    /api/admin/vault/status         → Get vault state
+                                         Response: { initialized: boolean }
+
+# Session (for GUI login, also useful for testing normal auth flow)
+POST   /api/admin/sessions             → Create session { recoveryPassword }
+                                         Sets httpOnly cookie, returns { success: true }
+
+DELETE /api/admin/sessions             → Logout (clear session)
+                                         Response: { success: true }
+
+# Folders
+POST   /api/admin/folders              → Create folder { name }
+                                         Response: { id, name, created_at }
+
+GET    /api/admin/folders              → List all folders
+                                         Response: { folders: [{ id, name, file_count, created_at }] }
+
+GET    /api/admin/folders/:id          → Get folder details
+                                         Response: { id, name, file_count, created_at, updated_at }
+
+PATCH  /api/admin/folders/:id          → Rename folder { name }
+                                         Response: { id, name, updated_at }
+
+DELETE /api/admin/folders/:id          → Delete folder and all its files
+                                         Response: { success: true }
+
+# Files
+POST   /api/admin/folders/:folderId/files  → Upload file (multipart/form-data)
+                                              Form fields: file (the file), name? (override filename)
+                                              Response: { id, name, mime_type, size_bytes, created_at }
+
+GET    /api/admin/files/:id            → Get file content (for GUI preview)
+                                         Response: File content with Content-Type header
+
+GET    /api/admin/files/:id/metadata   → Get file metadata
+                                         Response: { id, name, mime_type, size_bytes, folder_id, created_at }
+
+DELETE /api/admin/files/:id            → Delete file
+                                         Response: { success: true }
+
+# Agents
+POST   /api/admin/agents               → Register agent { name }
+                                         Response: { id, name, api_key } (api_key shown ONCE)
+
+GET    /api/admin/agents               → List all agents
+                                         Response: { agents: [{ id, name, api_key_prefix, created_at }] }
+
+GET    /api/admin/agents/:id           → Get agent details with grants
+                                         Response: { id, name, api_key_prefix, grants: [{ folder_id, folder_name }] }
+
+DELETE /api/admin/agents/:id           → Delete agent (removes all grants)
+                                         Response: { success: true }
+
+# Grants
+POST   /api/admin/grants               → Create grant { agentId, folderId }
+                                         Response: { id, agent_id, folder_id, granted_at }
+
+DELETE /api/admin/grants/:id           → Revoke grant
+                                         Response: { success: true }
+
+GET    /api/admin/grants               → List all grants (optional ?agentId= or ?folderId= filter)
+                                         Response: { grants: [{ id, agent_id, agent_name, folder_id, folder_name, granted_at }] }
+```
+
+### Error Responses
+
+All admin endpoints return consistent error format:
+
+```json
+{
+  "error": "error_code",
+  "message": "Human-readable description"
+}
+```
+
+Common error codes:
+- `vault_not_initialized` (400) — Setup hasn't been run yet
+- `unauthorized` (401) — Invalid or missing session (when not in test mode)
+- `not_found` (404) — Resource doesn't exist
+- `invalid_password` (401) — Wrong recovery password for setup/login
+- `already_exists` (409) — Resource already exists (e.g., duplicate grant)
+
+---
+
+## Implementation Plan (Test-Driven)
+
+Build in this order. Each phase includes tests that verify the implementation before moving on.
 
 ### Phase 1: Vault + Encryption Layer
-- Implement the vault module (init, encrypt, decrypt, lock/unlock, CRUD operations)
+- Implement the vault module (init, load, encrypt, decrypt, CRUD operations)
 - Implement keychain integration (store/retrieve master key)
 - Implement master key backup (PBKDF2-encrypted file) and restore
 - Implement SQLCipher-encrypted SQLite database
-- Write a simple test: encrypt a file, decrypt it, verify contents match
-- Test lock/unlock flow
 
-### Phase 2: Web GUI — Vault Manager + Agent Registration
+**Tests (unit, direct module access):**
+- `vault.init()` creates directory structure, keychain entry (unless MEMBRANE_SKIP_KEYCHAIN), and backup file
+- Encrypt a file, decrypt it, verify contents match
+- Restore from backup with correct password succeeds
+- Restore from backup with wrong password fails
+- **Encryption verification:** Read `.enc` file directly from disk, verify it's not plaintext (doesn't contain original content)
+- **Database encryption verification:** Read `membrane.sqlite` directly from disk, verify it's not readable SQL (first bytes are not "SQLite format")
+
+### Phase 2: Admin API — Setup, Folders, Files
 - Set up Next.js project with Tailwind
-- Implement session-based authentication (login page, session middleware, httpOnly cookie)
-- Implement the setup wizard (first-run experience with recovery password)
-- Implement vault lock/unlock UI
-- Build the vault manager page (folder CRUD, file upload, file listing)
-- Build the agent registration page (register agent, generate API key, list agents)
-- Files are encrypted on upload and decrypted for preview in the GUI
+- Implement test mode flag (`MEMBRANE_TEST_MODE`) that bypasses session auth
+- Implement `/api/admin/setup` endpoint
+- Implement `/api/admin/vault/status` endpoint
+- Implement `/api/admin/folders` CRUD endpoints
+- Implement `/api/admin/files` endpoints (upload, read, delete)
 
-### Phase 3: Agent API + Permissions
+**Tests (integration, via HTTP with test mode enabled):**
+- `POST /api/admin/setup` initializes a fresh vault
+- `GET /api/admin/vault/status` returns correct initialized state
+- Create folder, list folders, verify it appears
+- Rename folder, verify name changed
+- Upload file to folder, read it back, verify content matches
+- Delete file, verify it's gone
+- Delete folder, verify files are cascade deleted
+
+### Phase 3: Admin API — Agents, Grants, Sessions
+- Implement `/api/admin/agents` CRUD endpoints
+- Implement `/api/admin/grants` endpoints
+- Implement `/api/admin/sessions` endpoints
+- Implement session middleware for non-test-mode auth
+
+**Tests (integration):**
+- Register agent, verify API key is returned
+- Register agent, verify API key is NOT returned on subsequent GET
+- Delete agent, verify grants are cascade deleted
+- Create grant, verify it appears in agent's grant list
+- Revoke grant, verify it's removed
+- Session login with correct password succeeds
+- Session login with wrong password fails
+- Without test mode: admin endpoints require valid session
+
+### Phase 4: Agent API (Context Endpoints)
 - Implement API key auth middleware for `/api/context/*` routes
 - Implement the context endpoints (folders list, folder contents, file read)
-- Handle vault-locked state (503 responses)
-- Build the permissions dashboard (folder toggle grid per agent)
 - Wire up enforcement: context endpoints check grants before serving data
-- Implement access logging
 
-### Phase 4: Activity Log + Polish
-- Build the activity log page
-- Add error handling and edge cases
-- Test the full flow end-to-end: register agent → share folders → read context via API → revoke → verify 403
+**Tests (integration, full flow):**
+- Agent can list only granted folders (not all folders)
+- Agent can read files in granted folders
+- Agent gets 403 when accessing ungranted folder
+- Agent gets 403 when accessing file in ungranted folder
+- Agent gets 401 with invalid API key
+- Revoke grant → agent immediately gets 403
+
+### Phase 5: Web GUI
+- Implement login page (uses `/api/admin/sessions`)
+- Implement the setup wizard (uses `/api/admin/setup`)
+- Build the vault manager page (uses `/api/admin/folders` and `/api/admin/files`)
+- Build the agent registration page (uses `/api/admin/agents`)
+- Build the permissions dashboard (uses `/api/admin/grants`)
+
+**Tests (optional, browser-based if desired):**
+- GUI tests are optional since all functionality is covered by API tests
+- Can add Playwright tests for critical user flows if warranted
 
 ---
 
@@ -355,6 +456,38 @@ Build in this order:
 | Keychain | `keytar` npm package (cross-platform keychain access) |
 | File IDs | `uuid` npm package |
 | API Key Hashing | Node.js `crypto` module (SHA-256) — bcrypt is unnecessary since API keys are already high-entropy random strings |
+| Testing | Jest or Vitest for unit/integration tests, native `fetch` for API tests |
+
+---
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MEMBRANE_TEST_MODE` | When `true`, bypasses session auth on `/api/admin/*` routes. **Never enable in production.** | `false` |
+| `MEMBRANE_SKIP_KEYCHAIN` | When `true`, master key is held in memory only (not persisted to keychain). Enables tests and CI without keychain access. | `false` |
+| `MEMBRANE_DATA_DIR` | Override the default data directory (`~/.membrane`). Useful for tests to use isolated directories. | `~/.membrane` |
+| `MEMBRANE_PORT` | Port for the Next.js server | `3000` |
+
+### Test Environment Setup
+
+For automated tests, use an isolated data directory and skip keychain to avoid polluting real data:
+
+```bash
+# Run tests with isolated vault (no keychain, no auth)
+MEMBRANE_TEST_MODE=true \
+MEMBRANE_SKIP_KEYCHAIN=true \
+MEMBRANE_DATA_DIR=/tmp/membrane-test-$(date +%s) \
+npm test
+
+# Or in package.json scripts:
+"scripts": {
+  "test": "MEMBRANE_TEST_MODE=true MEMBRANE_SKIP_KEYCHAIN=true MEMBRANE_DATA_DIR=$(mktemp -d) vitest",
+  "test:watch": "MEMBRANE_TEST_MODE=true MEMBRANE_SKIP_KEYCHAIN=true MEMBRANE_DATA_DIR=/tmp/membrane-test vitest --watch"
+}
+```
+
+Each test run gets a fresh vault. The test data directory can be deleted after tests complete.
 
 ---
 
@@ -362,50 +495,227 @@ Build in this order:
 
 When this V0 is complete, the following end-to-end flow should work:
 
-1. User runs the app for the first time. The setup wizard asks for a recovery password, generates a master key, stores it in the keychain, creates an encrypted backup, and creates default folders.
-2. User uploads a few documents into the "Work" folder via the GUI.
+1. User runs the app for the first time. The setup wizard asks for a recovery password, generates a master key, stores it in the keychain, creates an encrypted backup, and initializes the database.
+2. User creates a "Work" folder and uploads a few documents into it via the GUI.
 3. User goes to the Agent Registration page and registers "Clawdbot Research Agent." They receive an API key (`mb_sk_...`).
 4. User goes to the Permissions Dashboard, clicks on "Clawdbot Research Agent," and toggles ON access to the "Work" folder.
 5. An agent (or a curl command simulating one) calls `GET /api/context/folders` with the API key and sees the "Work" folder listed.
 6. The agent calls `GET /api/context/folders/{id}` and sees the list of files.
 7. The agent calls `GET /api/context/files/{id}` and receives the decrypted file content.
-8. The agent tries to access the "Personal" folder (not granted) and gets `403 Forbidden`.
-9. The user checks the Activity Log and sees every access the agent made (including the denied attempt).
-10. The user goes back to Permissions Dashboard and toggles OFF the "Work" folder for that agent.
-11. The agent's next API call to that folder returns `403 Forbidden`.
+8. The agent tries to access a "Personal" folder (not granted) and gets `403 Forbidden`.
+9. The user goes back to Permissions Dashboard and toggles OFF the "Work" folder for that agent.
+10. The agent's next API call to that folder returns `403 Forbidden`.
 
 **Security validation:** If an agent with sudo access reads `~/.membrane/vault/{folder_id}/{file_id}.enc` directly from the filesystem, they get encrypted gibberish.
 
-### Quick Test Script
+### Automated Test Suite
 
-After the build is complete, the following curl commands should demonstrate the full API:
+The entire flow above should be verifiable via automated tests. Here's the test structure:
+
+```typescript
+// tests/e2e/full-flow.test.ts
+// Run with: MEMBRANE_TEST_MODE=true npm test
+
+describe('Membrane E2E Flow', () => {
+  const baseUrl = 'http://localhost:3000';
+  let workFolderId: string;
+  let personalFolderId: string;
+  let fileId: string;
+  let agent: { id: string; apiKey: string };
+
+  beforeAll(async () => {
+    // Initialize fresh vault
+    await fetch(`${baseUrl}/api/admin/setup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recoveryPassword: 'test-password-123' }),
+    });
+  });
+
+  test('create folders', async () => {
+    const work = await fetch(`${baseUrl}/api/admin/folders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Work' }),
+    }).then(r => r.json());
+
+    const personal = await fetch(`${baseUrl}/api/admin/folders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Personal' }),
+    }).then(r => r.json());
+
+    workFolderId = work.id;
+    personalFolderId = personal.id;
+    expect(work.name).toBe('Work');
+  });
+
+  test('upload file to Work folder', async () => {
+    const formData = new FormData();
+    formData.append('file', new Blob(['Hello, World!'], { type: 'text/plain' }), 'test.txt');
+
+    const res = await fetch(`${baseUrl}/api/admin/folders/${workFolderId}/files`, {
+      method: 'POST',
+      body: formData,
+    }).then(r => r.json());
+
+    fileId = res.id;
+    expect(res.name).toBe('test.txt');
+    expect(res.size_bytes).toBe(13);
+  });
+
+  test('register agent', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Test Agent' }),
+    }).then(r => r.json());
+
+    agent = { id: res.id, apiKey: res.api_key };
+    expect(res.api_key).toMatch(/^mb_sk_/);
+  });
+
+  test('agent cannot access folders before grant', async () => {
+    const res = await fetch(`${baseUrl}/api/context/folders`, {
+      headers: { 'Authorization': `Bearer ${agent.apiKey}` },
+    });
+    const data = await res.json();
+
+    // Agent sees empty list (no grants yet)
+    expect(data.folders).toHaveLength(0);
+  });
+
+  test('grant agent access to Work folder', async () => {
+    const res = await fetch(`${baseUrl}/api/admin/grants`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId: agent.id, folderId: workFolderId }),
+    }).then(r => r.json());
+
+    expect(res.folder_id).toBe(workFolderId);
+  });
+
+  test('agent can list granted folders', async () => {
+    const res = await fetch(`${baseUrl}/api/context/folders`, {
+      headers: { 'Authorization': `Bearer ${agent.apiKey}` },
+    }).then(r => r.json());
+
+    expect(res.folders).toHaveLength(1);
+    expect(res.folders[0].name).toBe('Work');
+  });
+
+  test('agent can read file in granted folder', async () => {
+    const res = await fetch(`${baseUrl}/api/context/files/${fileId}`, {
+      headers: { 'Authorization': `Bearer ${agent.apiKey}` },
+    });
+
+    const content = await res.text();
+    expect(content).toBe('Hello, World!');
+  });
+
+  test('agent cannot access ungranted folder', async () => {
+    const res = await fetch(`${baseUrl}/api/context/folders/${personalFolderId}`, {
+      headers: { 'Authorization': `Bearer ${agent.apiKey}` },
+    });
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toBe('no_access');
+  });
+
+  test('revoke grant, agent loses access immediately', async () => {
+    // Get the grant ID first
+    const grants = await fetch(`${baseUrl}/api/admin/grants?agentId=${agent.id}`)
+      .then(r => r.json());
+    const grantId = grants.grants[0].id;
+
+    await fetch(`${baseUrl}/api/admin/grants/${grantId}`, { method: 'DELETE' });
+
+    const res = await fetch(`${baseUrl}/api/context/folders/${workFolderId}`, {
+      headers: { 'Authorization': `Bearer ${agent.apiKey}` },
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  test('invalid API key returns 401', async () => {
+    const res = await fetch(`${baseUrl}/api/context/folders`, {
+      headers: { 'Authorization': 'Bearer mb_sk_invalid' },
+    });
+
+    expect(res.status).toBe(401);
+  });
+});
+
+// Separate test for encryption verification (reads files directly from disk)
+describe('Encryption Verification', () => {
+  const dataDir = process.env.MEMBRANE_DATA_DIR || '~/.membrane';
+
+  test('encrypted files are not readable as plaintext', async () => {
+    // Get file path from metadata
+    const metadata = await fetch(`${baseUrl}/api/admin/files/${fileId}/metadata`)
+      .then(r => r.json());
+
+    const encPath = `${dataDir}/vault/${metadata.folder_id}/${fileId}.enc`;
+    const encryptedContent = await fs.readFile(encPath);
+
+    // Should NOT contain the plaintext
+    expect(encryptedContent.toString()).not.toContain('Hello, World!');
+  });
+
+  test('database file is encrypted', async () => {
+    const dbPath = `${dataDir}/db/membrane.sqlite`;
+    const dbContent = await fs.readFile(dbPath);
+
+    // SQLite files start with "SQLite format 3\0"
+    // SQLCipher encrypted files do NOT have this header
+    const header = dbContent.slice(0, 16).toString();
+    expect(header).not.toBe('SQLite format 3\0');
+  });
+});
+```
+
+### Quick Manual Test (curl)
+
+For quick manual verification:
 
 ```bash
-# Health check
-curl http://localhost:3000/api/health
+# Set test mode and start server
+MEMBRANE_TEST_MODE=true npm run dev
 
-# List granted folders (replace with actual API key)
-curl -H "Authorization: Bearer mb_sk_your_key_here" \
+# Initialize vault
+curl -X POST http://localhost:3000/api/admin/setup \
+  -H "Content-Type: application/json" \
+  -d '{"recoveryPassword": "test123"}'
+
+# Create a folder
+curl -X POST http://localhost:3000/api/admin/folders \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Work"}'
+# Returns: {"id": "abc-123", "name": "Work", ...}
+
+# Upload a file (replace FOLDER_ID)
+curl -X POST http://localhost:3000/api/admin/folders/FOLDER_ID/files \
+  -F "file=@./test.txt"
+# Returns: {"id": "def-456", "name": "test.txt", ...}
+
+# Register an agent
+curl -X POST http://localhost:3000/api/admin/agents \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Test Agent"}'
+# Returns: {"id": "ghi-789", "api_key": "mb_sk_...", ...}
+
+# Grant access (replace IDs)
+curl -X POST http://localhost:3000/api/admin/grants \
+  -H "Content-Type: application/json" \
+  -d '{"agentId": "AGENT_ID", "folderId": "FOLDER_ID"}'
+
+# Now test the agent API (replace API_KEY)
+curl -H "Authorization: Bearer API_KEY" \
   http://localhost:3000/api/context/folders
 
-# List files in a folder (replace folder_id)
-curl -H "Authorization: Bearer mb_sk_your_key_here" \
-  http://localhost:3000/api/context/folders/{folder_id}
-
-# Read a file (replace file_id)
-curl -H "Authorization: Bearer mb_sk_your_key_here" \
-  http://localhost:3000/api/context/files/{file_id}
-
-# Try accessing an ungranted folder (should return 403)
-curl -H "Authorization: Bearer mb_sk_your_key_here" \
-  http://localhost:3000/api/context/folders/{ungranted_folder_id}
-
-# Try with invalid API key (should return 401)
-curl -H "Authorization: Bearer mb_sk_invalid" \
-  http://localhost:3000/api/context/folders
-
-# Try when vault is locked (should return 503)
-# (Lock the vault via GUI first, then try any context endpoint)
+curl -H "Authorization: Bearer API_KEY" \
+  http://localhost:3000/api/context/files/FILE_ID
 ```
 
 ---
