@@ -43,11 +43,10 @@ Membrane is a local-first personal context vault that lets users store personal 
 
 ## Claude Code Skill
 
-The `skill/` directory contains a Claude Code skill for accessing vault data:
+The `.claude/skills/` directory contains Claude Code skills for accessing vault data:
 
-- `skill/skill.md` - Skill instructions defining tools and behaviors
-- `skill/test-setup.md` - Test environment setup (creates folders + agent)
-- `skill/README.md` - User documentation for setup and usage
+- `.claude/skills/membrane/SKILL.md` - Main skill for vault access and file operations
+- `.claude/skills/membrane-test-setup/SKILL.md` - Test environment setup (internal use)
 
 ### Skill Commands
 
@@ -70,10 +69,11 @@ The `skill/` directory contains a Claude Code skill for accessing vault data:
 ## Project Structure
 
 ```
-skill/
-├── skill.md             # Claude Code skill instructions
-├── test-setup.md        # Test environment setup skill
-└── README.md            # User documentation
+.claude/skills/
+├── membrane/
+│   └── SKILL.md         # Main vault access skill
+└── membrane-test-setup/
+    └── SKILL.md         # Test environment setup skill
 src/
 ├── app/                 # Next.js App Router
 │   └── api/
