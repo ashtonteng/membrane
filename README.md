@@ -252,19 +252,42 @@ personal/ (1 file)
 Run without --dry-run to perform import.
 ```
 
-## Claude Code Integration
+## Integrating Agents
 
-Membrane includes a Claude Code skill for easy access to vault files during conversations.
+Any AI agent that can make HTTP requests can integrate with Membrane. Register the agent, grant folder access, and have it call the Context API.
 
-### Setup
+### Quick Start for Any Agent
 
+1. **Register the agent** at `http://localhost:3000/agents` and copy the API key
+2. **Grant folder access** at `http://localhost:3000/permissions`
+3. **Call the API** with the Bearer token:
+
+```bash
+# List folders the agent can access
+curl -H "Authorization: Bearer mb_sk_your_api_key" \
+  http://localhost:3000/api/context/folders
+
+# List files in a folder
+curl -H "Authorization: Bearer mb_sk_your_api_key" \
+  http://localhost:3000/api/context/folders/{folder_id}
+
+# Read a file
+curl -H "Authorization: Bearer mb_sk_your_api_key" \
+  http://localhost:3000/api/context/files/{file_id}
+```
+
+The agent receives JSON responses for folder/file listings and raw file content for file reads.
+
+### Claude Code
+
+Membrane includes a built-in skill for Claude Code that wraps the API.
+
+**Setup:**
 1. Register an agent in Membrane (`/agents`)
 2. Run `/membrane setup` in Claude Code
 3. Enter your API key when prompted
 
-The key is saved to `~/.membrane-claude-config.json`.
-
-### Commands
+**Commands:**
 
 | Command | Description |
 |---------|-------------|
@@ -275,27 +298,19 @@ The key is saved to `~/.membrane-claude-config.json`.
 | `/membrane search <pattern>` | Search files by name |
 | `/membrane health` | Check server status |
 
-### Example Session
+### Building Your Own Integration
 
-```
-> /membrane list folders
+To integrate Membrane with other agents or tools:
 
-Accessible folders:
-- work-projects (5 files)
-- health-records (3 files)
+1. **Store the API key** securely in your agent's configuration
+2. **Implement these endpoints:**
+   - `GET /api/context/folders` → List granted folders
+   - `GET /api/context/folders/:id` → List files in a folder
+   - `GET /api/context/files/:id` → Get decrypted file content
+3. **Handle errors:** 401 for invalid keys, 403 for unauthorized folder access
+4. **Cache folder/file IDs** to avoid repeated lookups
 
-> /membrane list files in work-projects
-
-Files in work-projects:
-- roadmap.md (2.0 KB)
-- meeting-notes.txt (1.5 KB)
-- api-design.md (4.2 KB)
-
-> /membrane read roadmap.md
-
-# Project Roadmap
-...
-```
+See the [API Reference](#api-reference) for full endpoint documentation.
 
 ## API Reference
 
