@@ -1,156 +1,64 @@
-# Membrane - Local Context Vault
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
 
-Membrane is a local-first personal context vault that lets users store personal documents and data in encrypted folders on their local filesystem, then grant folder-level read access to AI agents via a localhost API.
-
-## Architecture
-
-```
-~/.membrane/
-├── vault/           # Encrypted file storage (AES-256-GCM)
-├── db/              # SQLCipher-encrypted SQLite database
-├── keys/            # Master key backup (PBKDF2-encrypted)
-└── config.yaml      # Server configuration
-```
-
-## Tech Stack
-
-- **Frontend/API**: Next.js 14+ (App Router), Tailwind CSS
-- **Database**: SQLite with SQLCipher encryption
-- **Encryption**: AES-256-GCM via Node.js crypto
-- **Keychain**: keytar (cross-platform keychain access)
-- **Testing**: Vitest
-
-## Implementation Status
-
-- [x] Phase 1: Vault + Encryption Layer (54 tests)
-- [x] Phase 2: Admin API - Setup, Folders, Files (29 tests)
-- [x] Phase 3: Admin API - Agents, Grants, Sessions (26 tests)
-- [x] Phase 4: Agent API - Context Endpoints (24 tests)
-- [x] Phase 5: Web GUI (shadcn/ui components)
-- [x] Phase 6: Claude Code Skill
-
-**Total: 133 tests passing**
-
-## GUI Pages
-
-- `/setup` - First-run vault initialization wizard
-- `/login` - Recovery password authentication
-- `/vault` - Folder and file management with drag-and-drop upload
-- `/agents` - Agent registration with one-time API key display
-- `/permissions` - Toggle folder access per agent
-
-## Claude Code Skill
-
-The `.claude/skills/` directory contains Claude Code skills for accessing vault data:
-
-- `.claude/skills/membrane/SKILL.md` - Main skill for vault access and file operations
-- `.claude/skills/membrane-test-setup/SKILL.md` - Test environment setup (internal use)
-
-### Skill Commands
-
-| Command | Description |
-|---------|-------------|
-| `/membrane setup <key>` | Configure API key |
-| `/membrane list folders` | List accessible folders |
-| `/membrane list files in <folder>` | List files in a folder |
-| `/membrane read <filename>` | Read file content |
-| `/membrane search <pattern>` | Search files by name |
-| `/membrane health` | Check server status |
-| `/membrane test setup` | Create test environment with work/health folders |
-
-### Skill Configuration
-
-- `MEMBRANE_API_KEY` - Environment variable for API key
-- `MEMBRANE_URL` - Server URL (default: http://localhost:3000)
-- `~/.membrane-claude-config.json` - Config file fallback
-
-## Project Structure
-
-```
-.claude/skills/
-├── membrane/
-│   └── SKILL.md         # Main vault access skill
-└── membrane-test-setup/
-    └── SKILL.md         # Test environment setup skill
-src/
-├── app/                 # Next.js App Router
-│   └── api/
-│       ├── admin/       # Admin API (session-protected)
-│       │   ├── setup/   # POST - Initialize vault
-│       │   ├── vault/   # GET status
-│       │   ├── folders/ # CRUD operations
-│       │   ├── files/   # File operations
-│       │   ├── agents/  # Agent management
-│       │   ├── grants/  # Grant management
-│       │   └── sessions/# Session auth
-│       ├── context/     # Agent API (API key auth)
-│       │   ├── folders/ # List granted folders/files
-│       │   └── files/   # Get decrypted content
-│       └── health/      # Health check
-├── lib/
-│   ├── vault.ts         # Vault encryption operations
-│   ├── db.ts            # Database operations (agents, grants, sessions)
-│   ├── auth.ts          # Session authentication
-│   ├── apiAuth.ts       # API key authentication for agents
-│   └── types.ts         # TypeScript types
-└── tests/
-    ├── vault.test.ts    # Vault layer tests
-    ├── db.test.ts       # Database tests
-    ├── admin-api.test.ts # Admin API tests
-    ├── admin-agents.test.ts # Agents/grants tests
-    └── context-api.test.ts # Agent API tests
-```
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MEMBRANE_TEST_MODE` | Bypasses session auth on admin routes | `false` |
-| `MEMBRANE_SKIP_KEYCHAIN` | Master key held in memory only | `false` |
-| `MEMBRANE_DATA_DIR` | Override data directory | `~/.membrane` |
-| `MEMBRANE_PORT` | Server port | `3000` |
+Membrane is a local-first personal context vault that encrypts files with AES-256-GCM and lets users grant folder-level read access to AI agents via a localhost REST API. Data is stored in `~/.membrane/` with encrypted file storage and a SQLCipher-encrypted SQLite database.
 
 ## Development Commands
 
 ```bash
-# Run development server
+# Development server
 npm run dev
 
-# Run in test mode (bypasses auth, no keychain)
+# Development with auth bypassed (for testing)
 MEMBRANE_TEST_MODE=true MEMBRANE_SKIP_KEYCHAIN=true npm run dev
 
-# Run tests
+# Run all tests
 npm test
 
 # Run tests in watch mode
 npm run test:watch
 
-# Build for production
+# Run a single test file
+npm test src/tests/vault.test.ts
+
+# Run tests matching a pattern
+npm test -- -t "should encrypt"
+
+# Lint
+npm run lint
+
+# Build
 npm run build
 ```
 
-## API Overview
+## Architecture
 
-### Admin API (`/api/admin/*`)
-- `POST /api/admin/setup` - Initialize vault
-- `GET /api/admin/vault/status` - Check vault status
-- `POST/GET/PATCH/DELETE /api/admin/folders` - Folder CRUD
-- `POST/GET/DELETE /api/admin/files` - File operations
-- `POST/GET/DELETE /api/admin/agents` - Agent management
-- `POST/GET/DELETE /api/admin/grants` - Grant management
-- `POST/DELETE /api/admin/sessions` - Session management
+**Two-tier API design:**
+- **Admin API** (`/api/admin/*`) - Session-protected routes for vault management (folders, files, agents, grants)
+- **Agent API** (`/api/context/*`) - API key-authenticated routes for agents to read granted content
 
-### Agent API (`/api/context/*`)
-- `GET /api/context/folders` - List granted folders
-- `GET /api/context/folders/:id` - List files in folder
-- `GET /api/context/files/:id` - Get decrypted file content
+**Core libraries:**
+- `src/lib/vault.ts` - Encryption/decryption operations (AES-256-GCM)
+- `src/lib/db.ts` - SQLCipher database operations for agents, grants, sessions
+- `src/lib/auth.ts` - Session authentication for admin routes
+- `src/lib/apiAuth.ts` - API key authentication for agent routes
 
-## Security Model
+**Test structure:** Tests are in `src/tests/` and use Vitest. The test setup (`src/tests/setup.ts`) automatically sets `MEMBRANE_TEST_MODE` and `MEMBRANE_SKIP_KEYCHAIN`.
 
-- All vault files encrypted at rest with AES-256-GCM
-- SQLite database encrypted with SQLCipher
-- Master key stored in system keychain
-- API key authentication for agents
-- Session-based authentication for GUI
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `MEMBRANE_TEST_MODE` | Bypasses session auth on admin routes |
+| `MEMBRANE_SKIP_KEYCHAIN` | Master key held in memory only (no keytar) |
+| `MEMBRANE_DATA_DIR` | Override data directory (default: `~/.membrane`) |
+
+## Claude Code Skills
+
+The `.claude/skills/` directory contains skills for interacting with the vault:
+- `membrane` - Main skill for vault access and file operations
+- `membrane-import` - Import existing folder structure into a new vault
+- `membrane-test-setup` - Test environment setup
